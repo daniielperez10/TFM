@@ -1,0 +1,182 @@
+---
+title: "TFM"
+author: "DANIEL PÉREZ"
+date: "2024-04-05"
+output: html_document
+---
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+```
+
+
+```{r}
+# Inicializar una lista para almacenar los datos de todos los archivos
+datos_lista <- list()
+
+# Loop para leer cada archivo y almacenar los datos en la lista
+for (year in 2017:2023) {
+  # Generar el nombre del archivo para el año actual
+  file_name <- paste0(year, ".csv")
+  
+  # Leer el archivo CSV con read_delim
+  datos <- read_delim(file_name, delim = ";", escape_double = FALSE, trim_ws = TRUE)
+  
+  # Almacenar los datos en la lista
+  datos_lista[[year - 2015]] <- datos
+}
+
+
+
+```
+
+
+```{r}
+# Inicializar una lista para almacenar los datos de todos los archivos
+datos_lista <- list()
+
+# Loop para leer cada archivo y almacenar los datos en la lista
+for (year in 2017:2023) {
+  # Generar el nombre del archivo para el año actual
+  file_name <- paste0(year, ".csv")
+  
+  # Leer el archivo CSV con read_delim
+  datos <- read_delim(file_name, delim = ";", escape_double = FALSE, trim_ws = TRUE)
+  
+  # Almacenar los datos en la lista
+  datos_lista[[length(datos_lista) + 1]] <- datos
+}
+
+
+```
+```{r}
+df_final <- do.call(rbind, datos_lista)
+```
+
+
+```{r}
+daily_pollution <- df_final %>% 
+    rename(town_code = MUNICIPIO,
+           station_code = ESTACION,
+           magnitude = MAGNITUD,
+           year = ANO,
+           month = MES) %>% 
+    select(-matches("^V"))
+
+daily_pollution <- daily_pollution %>%
+  filter(magnitude == "8") %>% 
+    select(-magnitude)
+
+str(daily_pollution)
+
+daily_pollution <- daily_pollution %>%
+  pivot_longer(cols = starts_with("D"),
+               names_to = "dia_mes",
+               values_to = "air_quality")
+  
+
+
+```
+
+
+```{r}
+unique_values <- unique(daily_pollution$station_code)
+unique_values <- unique(daily_pollution$PUNTO_MUESTREO)
+print(unique_values)
+```
+
+
+###DATOS QUE NO SON DE MADRID CENTRO
+
+
+```{r}
+datos_lista_OUT <- list()
+
+# Loop para leer cada archivo y almacenar los datos en la lista
+for (year in 2017:2023) {  # Cambiado para incluir el año 2016
+  # Generar el nombre del archivo para el año actual
+  file_name <- paste0(year, "_out.csv")  # Cambiado para reflejar el nuevo formato del nombre del archivo
+  
+  # Leer el archivo CSV con read_delim
+  datos_OUT <- read_delim(file_name, delim = ";", escape_double = FALSE, trim_ws = TRUE)
+  
+  # Almacenar los datos en la lista
+  datos_lista_OUT[[year - 2015]] <- datos_OUT
+}
+```
+
+```{r}
+df_final_out <- do.call(rbind, datos_lista_OUT)
+```
+
+
+
+```{r}
+daily_pollution_out <- df_final_out %>% 
+    rename(town_code = municipio,
+           station_code = estacion,
+           magnitude = magnitud,
+           year = ano,
+           month = mes) %>% 
+    select(-matches("^V"))
+
+
+daily_pollution_out <- daily_pollution_out %>%
+  filter(magnitude == "8") %>% 
+    select(-magnitude)
+
+
+str(daily_pollution_out)
+  
+
+```
+
+
+```{r}
+# Convertir las horas de caracteres a numéricos
+
+daily_pollution_out <- mutate(daily_pollution_out,
+                               h01 = as.numeric(gsub(",", ".", h01)),
+                               h02 = as.numeric(gsub(",", ".", h02)),
+                               h03 = as.numeric(gsub(",", ".", h03)),
+                               h04 = as.numeric(gsub(",", ".", h04)),
+                               h05 = as.numeric(gsub(",", ".", h05)),
+                               h06 = as.numeric(gsub(",", ".", h06)),
+                               h07 = as.numeric(gsub(",", ".", h07)),
+                               h08 = as.numeric(gsub(",", ".", h08)),
+                               h09 = as.numeric(gsub(",", ".", h09)),
+                               h10 = as.numeric(gsub(",", ".", h10)),
+                               h11 = as.numeric(gsub(",", ".", h11)),
+                               h12 = as.numeric(gsub(",", ".", h12)),
+                               h13 = as.numeric(gsub(",", ".", h13)),
+                               h14 = as.numeric(gsub(",", ".", h14)),
+                               h15 = as.numeric(gsub(",", ".", h15)),
+                               h16 = as.numeric(gsub(",", ".", h16)),
+                               h17 = as.numeric(gsub(",", ".", h17)),
+                               h18 = as.numeric(gsub(",", ".", h18)),
+                               h19 = as.numeric(gsub(",", ".", h19)),
+                               h20 = as.numeric(gsub(",", ".", h20)),
+                               h21 = as.numeric(gsub(",", ".", h21)),
+                               h22 = as.numeric(gsub(",", ".", h22)),
+                               h23 = as.numeric(gsub(",", ".", h23)),
+                               h24 = as.numeric(gsub(",", ".", h24)))
+
+
+# Calcular la media diaria
+
+daily_pollution_out <- mutate(daily_pollution_out,
+                               air_quality = rowMeans(select(daily_pollution_out, starts_with("h")), na.rm = TRUE)) 
+
+daily_pollution_out <- mutate(daily_pollution_out,
+                               air_quality = round(air_quality))
+
+
+daily_pollution_out <- daily_pollution_out %>%
+                         select(-starts_with("h"))
+
+```
+
