@@ -1,0 +1,649 @@
+---
+title: "Untitled"
+author: "DANIEL PÉREZ"
+date: "2024-06-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(caret)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(Synth)
+```
+
+
+```{r}
+df_combined <- read_csv("df_combined_complete.csv")
+```
+```{r}
+df_combined_clean <- df_combined %>% drop_na(air_quality)
+
+colSums(is.na(df_combined_clean))
+
+```
+```{r}
+ggplot(df_combined_clean, aes(x = air_quality)) +
+  geom_density(fill = "blue", color = "black") +
+  labs(title = "Densidad de la Calidad del Aire", x = "Calidad del Aire", y = "Densidad") +
+  theme_minimal()
+
+```
+```{r}
+#df_combined_clean <- df_combined_clean[df_combined_clean$air_quality > 0, ]
+
+# Aplicar logaritmo a la variable air_quality
+#df_combined_clean$log_air_quality <- log(df_combined_clean$air_quality)
+
+```
+
+```{r}
+#ggplot(df_combined_clean, aes(x = log_air_quality)) +
+  #geom_density(fill = "blue", color = "black") +
+  #labs(title = "Densidad de la Calidad del Aire", x = "Calidad del Aire", y = "Densidad") +
+  #theme_minimal()
+
+```
+
+#CONSTRUIR EL CONTRAFACTUAL CON MODELOS DE MACHINE LEARNING
+
+```{r}
+
+data_pre_policy <- df_combined_clean %>% filter(fecha < as.Date('2018-11-30'))
+data_pre_policy <- data_pre_policy%>% filter(city_center == 1)
+
+data_pre_policy <- data_pre_policy %>%
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_pre_policy <- data_pre_policy |> 
+  select(c(5:6, 8, 14, 16:18, 20:22, 25:27))
+```
+
+```{r}
+set.seed(42)
+index_20 <- createDataPartition(data_pre_policy$air_quality, p = 0.5, list = FALSE) #USÉ 0.5 PARA RANDOM FOREST
+data_20 <- data_pre_policy[index_20, ]
+
+```
+
+```{r}
+set.seed(42)
+
+trainIndex_20 <- createDataPartition(data_20$air_quality, p = 0.6, list = FALSE)
+train_data_20 <- data_20[trainIndex_20, ]
+test_data_20 <- data_20[-trainIndex_20, ]
+
+str(train_data_20)
+
+```
+
+1. RANDOM FOREST
+
+```{r}
+set.seed(42)
+
+train_control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+
+model <- train(air_quality ~ ., 
+               data = train_data_20, 
+               method = "rf", 
+               trControl = train_control)
+
+# Evaluar el modelo en el conjunto de prueba
+predictions <- predict(model, newdata = test_data_20)
+test_results <- data.frame(actual = test_data_20$air_quality, predicted = predictions)
+
+rmse <- sqrt(mean((test_results$actual - test_results$predicted)^2)) #10
+mae <- mean(abs(test_results$actual - test_results$predicted)) 7.64
+r2 <- cor(test_results$actual, test_results$predicted)^2 0.75
+
+```
+
+2. xgboost
+```{r}
+set.seed(42)
+library(xgboost)
+
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation. Si lo aumento me tarda muchísmo en cargar el modelo.
+
+tune_grid <- expand.grid(
+  nrounds = c(500, 1000),
+  max_depth = c(6, 8,10),
+  eta = c(0.01, 0.1),
+  gamma = c(1, 2),
+  colsample_bytree = c(0.6, 0.8),  # Debe estar entre 0 y 1
+  min_child_weight = c(1, 2, 4),
+  subsample = c(0.5, 0.8)
+) #Con estos valores -> RMSE 8.2074403 Rsquared 0.8311039 MAE 6.1128442
+
+tune_grid <- expand.grid(
+  nrounds = c(500, 1000),
+  max_depth = c(6, 8, 10, 12),
+  eta = c(0.01, 0.05, 0.1, 0.2),
+  gamma = c(0, 1, 2, 4),
+  colsample_bytree = c(0.6, 0.8, 1.0),  # Debe estar entre 0 y 1
+  min_child_weight = c(1, 2, 4, 6),
+  subsample = c(0.5, 0.7, 0.8)
+)  
+
+
+set.seed(42)
+xgb_tune <- train(
+  air_quality ~ . ,
+  data = train_data_20, 
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  verbose = TRUE
+)
+
+set.seed(42)
+predictions <- predict(xgb_tune, newdata = test_data_20)
+
+# Evaluar el modeloo 
+results <- postResample(predictions, test_data_20$air_quality)
+print(results)
+
+```
+
+
+```{r}
+data_post_policy <- df_combined_clean %>% filter(fecha >= as.Date('2018-11-30'))
+data_post_policy <- data_post_policy%>% filter(city_center == 1)
+
+data_post_policy <- data_post_policy %>%
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_post_policy <- data_post_policy |> 
+  select(c(5:6, 7:9, 14, 16:18, 20:22, 25:27))
+
+set.seed(42)
+data_post_policy$predicted_air_quality <- predict(xgb_tune, newdata = data_post_policy)
+
+#write.csv(data_post_policy, file = "predictions_xgboost_POSTPOLICY_CITYCENTER_CV", row.names = FALSE) #guardar el dataframe con las predicciones generadas por xgboost
+```
+
+```{r}
+data_post_policy<- read_csv("predictions_xgboost_POSTPOLICY_CITYCENTER_CV")
+```
+
+Suposición 4 (estabilidad de la función contrafactual):
+
+Propósito: Asegurar que la predicción de lo que habría ocurrido sin el tratamiento es consistente y estable a lo largo del tiempo.
+Analogía con Pre-tendencias: En DiD, las tendencias paralelas implican que cualquier diferencia entre los grupos después del tratamiento se debe al tratamiento. Similarmente, la estabilidad de la función contrafactual implica que cualquier diferencia observada se puede atribuir al tratamiento y no a cambios en la función de predicción.
+
+```{r}
+cv_residuos <- residuals(xgb_tune, type = "raw")
+
+tratamiento_date <- as.Date("2018-11-30")
+
+
+tratamiento_fecha <- as.Date("2018-11-01")  # Establece la fecha de inicio del tratamiento (por ejemplo, el 1 de noviembre de 2018)
+
+# Paso 2: Crear una fecha con día 01 en train_data_20
+train_data_20$fecha <- as.Date(paste(train_data_20$year, train_data_20$month, "01", sep = "-"))
+
+# Paso 3: Calcular los meses antes del tratamiento
+
+
+train_data_20$weeks_Prior_to_Treatment <- as.numeric(difftime(tratamiento_fecha, train_data_20$fecha, units = "weeks")) 
+
+train_data_20$cv_residuos <- cv_residuos
+
+write.csv(train_data_20, "train_data_20.csv", row.names = FALSE) #guardo el training set con los residuos para evaluar supuesto 4
+```
+```{r}
+train_data_20<- read_csv("train_data_20.csv")
+
+
+```
+
+
+```{r}
+train_data_20$weeks_Prior_to_Treatment <- ceiling(train_data_20$weeks_Prior_to_Treatment)
+
+regresion <- lm(cv_residuos ~ weeks_Prior_to_Treatment , data = train_data_20)
+summary(regresion)
+
+set.seed(42)
+predicciones <- predict(regresion, newdata = train_data_20, interval = "confidence")
+
+
+weekly_residuals <- train_data_20 %>%
+  group_by(weeks_Prior_to_Treatment) %>%
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+weekly_residuals <- train_data_20 %>%
+  mutate(weeks_group = cut(weeks_Prior_to_Treatment, 
+                           breaks = seq(0, max(weeks_Prior_to_Treatment) + 5, by = 5),
+                           right = FALSE, labels = FALSE)) %>%
+  group_by(weeks_group) %>%
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+
+weekly_residuals <- train_data_20 %>%
+  group_by(weeks_Prior_to_Treatment) %>%
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+weekly_residuals <- weekly_residuals %>%
+  filter(row_number() != 11)
+
+# Crear el gráfico
+ggplot(weekly_residuals, aes(x = weeks_Prior_to_Treatment, y = cv_residuos_mean)) +
+  geom_point(color = "blue") +  # Puntos de datos reales
+  geom_line(color = "blue") +  # Línea de predicción
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), fill = "blue", alpha = 0.2) +  # Intervalo de confianza
+  labs(title = "Evaluación de Efectos Anticipados y la Estabilidad de la Función Contrafactual",
+       x = "Semanas Previas al Tratamiento",
+       y = "Residuos Validados Cruzados") +
+  theme_minimal() +
+  annotate("text", x = Inf, y = Inf, label = sprintf("F-stat = %.3f\nP-value = %.3f",
+           summary(regresion)$fstatistic[1],
+           pf(summary(regresion)$fstatistic[1], 
+              summary(regresion)$fstatistic[2], 
+              summary(regresion)$fstatistic[3], 
+              lower.tail = FALSE)),
+           hjust = 1.1, vjust = 1.5, size = 5, color = "red") +
+          coord_cartesian(ylim = c(-0.15, 0.15)) 
+   
+
+
+```
+```{r}
+set.seed(123)
+
+# Generar datos sintéticos
+n <- 100
+weeks_Prior_to_Treatment <- rep(1:n, each = 50)
+cv_residuos <- rnorm(n * 50) + sin(weeks_Prior_to_Treatment / 5) * 0.5  # Añadiendo variación senoidal
+
+train_data_20_synthetic <- data.frame(weeks_Prior_to_Treatment, cv_residuos)
+
+# Agrupar por semanas y calcular estadísticos
+weekly_residuals_synthetic <- train_data_20_synthetic %>%
+  group_by(weeks_Prior_to_Treatment) %>%
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+# Crear el gráfico
+ggplot(weekly_residuals_synthetic, aes(x = weeks_Prior_to_Treatment, y = cv_residuos_mean)) +
+  geom_point(color = "blue") +  # Puntos de datos reales
+  geom_line(color = "blue") +  # Línea de predicción
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), fill = "blue", alpha = 0.2) +  # Intervalo de confianza
+  labs(title = "Evaluación de Efectos Anticipados y la Estabilidad de la Función Contrafactual",
+       x = "Semanas Previas al Tratamiento",
+       y = "Residuos Validados Cruzados") +
+  theme_minimal() +
+  annotate("text", x = Inf, y = Inf, label = "Función Contrafactual No Estable",
+           hjust = 1.1, vjust = 1.5, size = 5, color = "red")
+
+```
+
+
+```{r}
+data_pre_policy <- data_pre_policy %>%
+  select(-c("air_quality"))
+
+set.seed(42)
+index_20 <- createDataPartition(data_pre_policy$log_air_quality, p = 0.2, list = FALSE)
+data_20 <- data_pre_policy[index_20, ]
+
+```
+
+```{r}
+set.seed(42)
+trainIndex_20 <- createDataPartition(data_20$log_air_quality, p = 0.5, list = FALSE)
+train_data_20 <- data_20[trainIndex_20, ]
+test_data_20 <- data_20[-trainIndex_20, ]
+
+str(train_data_20)
+
+```
+
+```{r}
+train_control <- trainControl(method = "cv", number = 2)  # 2-fold cross-validation. Si lo aumento me tarda muchísmo en cargar el modelo.
+
+tune_grid <- expand.grid(
+  nrounds = c(500, 1000),
+  max_depth = c(6, 8,10),
+  eta = c(0.01, 0.1),
+  gamma = c(1, 2),
+  colsample_bytree = c(0.6, 0.8),  # Debe estar entre 0 y 1
+  min_child_weight = c(1, 2, 4),
+  subsample = c(0.5, 0.8)
+) #Con estos valores -> RMSE 10.9762207  Rsquared 0.6976656 MAE 8.2337692
+
+
+
+xgb_tune_log <- train(
+  log_air_quality ~ . ,
+  data = train_data_20, 
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  verbose = TRUE
+)
+
+predictions <- predict(xgb_tune_log, newdata = test_data_20)
+
+test_data_20$air_quality <- exp(test_data_20$log_air_quality)
+
+
+# Evaluar el modeloo 
+results <- postResample(predictions, test_data_20$air_quality)
+print(results)
+
+predictions <- exp(predictions) 
+
+```
+```{r}
+data_post_policy <- df_combined_clean %>% filter(fecha >= as.Date('2018-11-30'))
+data_post_policy <- data_post_policy%>% filter(city_center == 1)
+
+data_post_policy <- data_post_policy %>%
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_post_policy <- data_post_policy |> 
+  select(c(5:6, 7:9, 14, 16:18, 20:22, 25:27))
+
+data_post_policy$predicted_air_quality <- predict(xgb_tune_log, newdata = data_post_policy)
+
+write.csv(data_post_policy, file = "data_post_cam_xgboost_cv10", row.names = FALSE) #guardar el dataframe con las predicciones generadas por xgboost para el post policy fuera de city center
+
+
+```
+
+REPETIR EL MISMO PROCESO PARA EL GRUPO DE CONTROL (CREAR GRUPO CONTROL SINTÉTICO MANUAL CON ML MODELS)
+
+
+```{r}
+
+data_pre_policy <- df_combined_clean %>% filter(fecha < as.Date('2018-11-30'))
+data_pre_policy <- data_pre_policy%>% filter(city_center == 0)
+
+data_pre_policy <- data_pre_policy %>%
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_pre_policy <- data_pre_policy |> 
+  select(c(5:6, 8, 14, 16:18, 20:22, 25:27))
+
+```
+
+```{r}
+set.seed(42)
+index_20 <- createDataPartition(data_pre_policy$air_quality, p = 0.2, list = FALSE)
+data_20 <- data_pre_policy[index_20, ]
+```
+
+```{r}
+set.seed(42)
+
+trainIndex_20 <- createDataPartition(data_20$air_quality, p = 0.5, list = FALSE)
+train_data_20 <- data_20[trainIndex_20, ]
+test_data_20 <- data_20[-trainIndex_20, ]
+```
+
+```{r}
+set.seed(42)
+
+train_control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+
+tune_grid <- expand.grid(
+  nrounds = c(500, 1000),
+  max_depth = c(6, 8,10),
+  eta = c(0.01, 0.1),
+  gamma = c(1, 2),
+  colsample_bytree = c(0.6, 0.8),  # Debe estar entre 0 y 1
+  min_child_weight = c(1, 2, 4),
+  subsample = c(0.5, 0.8)
+) #Con estos valores -> RMSE 9.2774263  Rsquared 0.7155058  MAE 6.7058515
+
+
+xgb_tune <- train(
+  air_quality ~ . ,
+  data = train_data_20, 
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  verbose = TRUE
+)
+
+predictions <- predict(xgb_tune, newdata = test_data_20)
+
+# Evaluar el modeloo 
+results <- postResample(predictions, test_data_20$air_quality)
+print(results)
+
+
+```
+```{r}
+set.seed(42)
+
+
+data_post_policy <- df_combined_clean %>% filter(fecha >= as.Date('2018-11-30'))
+data_post_policy <- data_post_policy%>% filter(city_center == 0)
+
+data_post_policy <- data_post_policy %>%
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_post_policy <- data_post_policy |> 
+  select(c(5:6, 7:9, 14, 16:18, 20:22, 25:27))
+
+data_post_policy <- data_post_policy %>%
+  filter(station_name != "Puerto de Cotos (Rascafria)")
+
+data_post_policy$predicted_air_quality <- predict(xgb_tune, newdata = data_post_policy)
+
+```
+
+
+
+```{r}
+
+data_pre_policy <- data_pre_policy |> 
+  select(-c(6, 7))
+
+train_data_20 <- train_data_20 |> 
+  select(-c(6, 7))
+
+
+ctrl <- trainControl(method = "cv", number = 10)  # Validación cruzada con 5 particiones
+
+nn_tune <- train(air_quality ~ .,
+                 data = train_data_20,
+                 method = "neuralnet",
+                 preProc=c('scale','center'),
+                 trControl = ctrl,
+                 tuneGrid = expand.grid(layer1 = c(4, 2),
+                                        layer2 = c(2, 1, 0),
+                                        layer3 = c(0)))
+
+predictions <- predict(nn_tune, newdata = test_data_20)
+
+# Evaluar el modelo
+results <- postResample(predictions, test_data_20$air_quality)
+
+print(results)
+
+
+test_results$nn <- predict(nn_tune, test_data_20)
+
+
+```
+
+
+
+
+
+```{r}
+df_media_anual <- df_combined_clean %>%
+  mutate(year = lubridate::year(fecha)) %>%  # Agregar una columna para el año
+  group_by(punto_muestreo_num, year) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE)) %>%
+  ungroup()
+df_media_anual <- df_media_anual |> 
+  select(c(1:2, 6, 14, 15))
+```
+
+```{r}
+
+df_media_anual$punto_muestreo_num <- as.numeric(df_media_anual$punto_muestreo_num)
+
+
+dataprep.out<-
+  dataprep(
+   foo = df_media_anual,
+   predictors = c("tmed", "prec"),
+   predictors.op = "mean",
+   dependent = "air_quality",
+   unit.variable = "punto_muestreo_num",
+   time.variable = "year",
+   treatment.identifier = 1,
+   controls.identifier = c(2:48),
+   time.predictors.prior = c(2015:2017),
+   time.optimize.ssr = c(2015:2020),
+   time.plot = 2017:2023
+   )
+
+
+
+```
+
+#### GRUPO CONTROL SINTÉTICO (NO FUNCIONA)
+
+```{r}
+str(df_combined_clean)
+
+data(synth.data)
+
+str(synth.data)
+dataprep.out<-
+  dataprep(
+   foo = synth.data,
+   predictors = c("X1", "X2", "X3"),
+   predictors.op = "mean",
+   dependent = "Y",
+   unit.variable = "unit.num",
+   time.variable = "year",
+   special.predictors = list(
+      list("Y", 1991, "mean"),
+      list("Y", 1985, "mean"),
+      list("Y", 1980, "mean")
+                            ),
+   treatment.identifier = 7,
+   controls.identifier = c(29, 2, 13, 17, 32, 38),
+   time.predictors.prior = c(1984:1989),
+   time.optimize.ssr = c(1984:1990),
+   unit.names.variable = "name",
+   time.plot = 1984:1996
+   )
+
+synth.out <- synth(dataprep.out)
+
+
+```
+
+```{r}
+```{r}
+df_combined_clean <- df_combined_clean %>%
+  mutate(date_numeric = as.numeric(fecha - min(fecha)))
+
+df_combined_clean <- df_combined_clean %>%
+  mutate(punto_muestreo_num = as.integer(factor(station_name)))
+
+df_combined_clean$punto_muestreo_num <- as.numeric(df_combined_clean$punto_muestreo_num)
+
+str(df_combined_clean$punto_muestreo_num)
+
+treatment_units <- c(7:48)  # Números de las estaciones tratadas
+control_units <- c(1:6)  # Números de las estaciones de control
+time_predictors_prior <- 0:100  # Ajustar según el periodo anterior al tratamiento
+time_optimize_ssr <- 0:100  # Ajustar según el periodo anterior al tratamiento
+time_plot <- 0:max(df_combined_clean$date_numeric)
+```
+
+```{r}
+dataprep.out<-
+  dataprep(
+   foo = df_combined_clean,
+   predictors = c("altitud", "tmed", "prec"),
+   predictors.op = "mean",
+   dependent = "air_quality",
+   unit.variable = "punto_muestreo_num",
+   time.variable = "date_numeric",
+   special.predictors = list(
+      list("Y", 1991, "mean"),
+      list("Y", 1985, "mean"),
+      list("Y", 1980, "mean")
+                            ),
+   treatment.identifier = 7,
+   controls.identifier = c(29, 2, 13, 17, 32, 38),
+   time.predictors.prior = c(1984:1989),
+   time.optimize.ssr = c(1984:1990),
+   unit.names.variable = "name",
+   time.plot = 1984:1996
+   )
+
+
+dataprep.out <- dataprep(
+  foo = df_combined_clean,
+  predictors = c("altitud", "tmed", "tmax", "tmin", "dir", "velmedia"),
+  predictors.op = "mean",
+  dependent = "air_quality",
+  unit.variable = "punto_muestreo_num",
+  time.variable = "year",
+  treatment.identifier = treatment_units,
+  controls.identifier = control_units,
+  time.predictors.prior = time_predictors_prior,
+  time.optimize.ssr = time_optimize_ssr,
+  unit.names.variable = "station_name",
+  time.plot = time_plot
+)
+
+```
+
