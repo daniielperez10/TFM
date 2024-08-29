@@ -1,0 +1,444 @@
+---
+title: "Parallel Trends Graph"
+author: "DANIEL PÉREZ"
+date: "2024-05-20"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(geosphere)
+library(climaemet)
+library(ggplot2)
+```
+
+I am repeating the same process as in script 1, where I create the dataframe. I am running everything from scratch again because after creating the dataframe and conducting the causal analysis, I decided to add data from 2015 and 2016, which allow me to improve the parallel trends graphs. Therefore, to avoid any issues with the work I have done, I have decided to repeat the process from the beginning to ensure that the scripts are still working correctly.
+
+
+MADRID CITY CENTER DATA
+```{r}
+datos_lista <- list()
+
+for (year in 2015:2023) {
+ 
+  file_name <- paste0(year, ".csv")
+  datos <- read_delim(file_name, delim = ";", escape_double = FALSE, trim_ws = TRUE)
+  datos_lista[[year - 2014]] <- datos
+}
+```
+
+```{r}
+df_final <- do.call(rbind, datos_lista)
+```
+
+
+```{r}
+daily_pollution <- df_final |> 
+    rename(town_code = MUNICIPIO,
+           station_code = ESTACION,
+           magnitude = MAGNITUD,
+           year = ANO,
+           month = MES,
+           provincia = PROVINCIA,
+           punto_muestreo = PUNTO_MUESTREO) |> 
+    select(-matches("^V"))
+
+daily_pollution <- daily_pollution |> 
+  filter(magnitude == "8") |> 
+    select(-magnitude)
+```
+
+
+```{r}
+daily_pollution <- daily_pollution |> 
+  pivot_longer(cols = starts_with("D"),
+               names_to = "dia",
+               values_to = "no2_pollution")
+```
+
+
+```{r}
+daily_pollution_center <- daily_pollution
+
+for (i in 1:nrow(daily_pollution_center)) {
+  if (substr(daily_pollution_center$dia[i], 1, 1) == "D") {
+    daily_pollution_center$dia[i] <- substr(daily_pollution_center$dia[i], 2, nchar(daily_pollution_center$dia[i]))
+  }
+}
+```
+
+```{r}
+fecha_str <- paste(daily_pollution_center$year, daily_pollution_center$month, daily_pollution_center$dia, sep = "-")
+
+# Convertir la cadena de fecha a un objeto de fecha
+daily_pollution_center$fecha <- as.Date(fecha_str, format = "%Y-%m-%d")
+
+```
+Calculate the average NO2 Pollution each year
+```{r}
+daily_pollution_center <- daily_pollution_center |> 
+  mutate(
+    no2_pollution = as.numeric(no2_pollution),
+    fecha = as.factor(fecha))
+
+mean_no2_pollution_per_year <- daily_pollution_center |> 
+  group_by(year) |> 
+  summarize(mean_no2_pollution = mean(no2_pollution, na.rm = TRUE))
+
+
+mean_no2_pollution_per_year
+  
+```
+
+DATA FROM THE COMMUNITY OF MADRID, NOT JUST THE CITY CENTER
+
+```{r}
+datos_lista_OUT <- list()
+for (year in 2015:2023) { 
+  file_name <- paste0(year, "_out.csv")  
+  datos_OUT <- read_delim(file_name, delim = ";", escape_double = FALSE, trim_ws = TRUE)
+  datos_lista_OUT[[year - 2014]] <- datos_OUT
+}
+```
+
+Verify that all dataframes have the same columns.
+
+```{r}
+columnas_lista_OUT <- lapply(datos_lista_OUT, names)
+columnas_lista_OUT
+
+```
+
+We see that the 2015 data has a column called ‘v24,,,,,,,’ when it should be just V24. So we correct it and put it all together in the same dataframe.
+
+```{r}
+datos_lista_OUT <- list()
+
+for (year in 2015:2023) {
+  file_name <- paste0(year, "_out.csv")
+  datos_OUT <- read_delim(file_name, delim = ";", escape_double = FALSE, trim_ws = TRUE)
+  # Correct problem
+  if (year == 2015) { 
+    names(datos_OUT)[names(datos_OUT) == "v24,,,,,,,,,,,,,,,,,,,,,,,,"] <- "v24"
+  }
+  
+  datos_lista_OUT[[year - 2014]] <- datos_OUT
+}
+
+#Combine dataframes
+df_final_out <- do.call(rbind, datos_lista_OUT)
+
+```
+
+```{r}
+daily_pollution_out <- df_final_out |> 
+    rename(town_code = municipio,
+           station_code = estacion,
+           magnitude = magnitud,
+           year = ano,
+           month = mes
+          ) |> 
+    select(-matches("^V"))
+
+
+daily_pollution_out <- daily_pollution_out |> 
+  filter(magnitude == "8") |> 
+    select(-magnitude)
+```
+
+
+```{r}
+daily_pollution_out <- mutate(daily_pollution_out,
+                               h01 = as.numeric(gsub(",", ".", h01)),
+                               h02 = as.numeric(gsub(",", ".", h02)),
+                               h03 = as.numeric(gsub(",", ".", h03)),
+                               h04 = as.numeric(gsub(",", ".", h04)),
+                               h05 = as.numeric(gsub(",", ".", h05)),
+                               h06 = as.numeric(gsub(",", ".", h06)),
+                               h07 = as.numeric(gsub(",", ".", h07)),
+                               h08 = as.numeric(gsub(",", ".", h08)),
+                               h09 = as.numeric(gsub(",", ".", h09)),
+                               h10 = as.numeric(gsub(",", ".", h10)),
+                               h11 = as.numeric(gsub(",", ".", h11)),
+                               h12 = as.numeric(gsub(",", ".", h12)),
+                               h13 = as.numeric(gsub(",", ".", h13)),
+                               h14 = as.numeric(gsub(",", ".", h14)),
+                               h15 = as.numeric(gsub(",", ".", h15)),
+                               h16 = as.numeric(gsub(",", ".", h16)),
+                               h17 = as.numeric(gsub(",", ".", h17)),
+                               h18 = as.numeric(gsub(",", ".", h18)),
+                               h19 = as.numeric(gsub(",", ".", h19)),
+                               h20 = as.numeric(gsub(",", ".", h20)),
+                               h21 = as.numeric(gsub(",", ".", h21)),
+                               h22 = as.numeric(gsub(",", ".", h22)),
+                               h23 = as.numeric(gsub(",", ".", h23)),
+                               h24 = as.numeric(gsub(",", ".", h24)))
+
+
+daily_pollution_out <- mutate(daily_pollution_out,
+                               no2_pollution = rowMeans(select(daily_pollution_out, starts_with("h")), na.rm = TRUE)) 
+
+daily_pollution_out <- mutate(daily_pollution_out,
+                               no2_pollution = round(no2_pollution))
+
+
+daily_pollution_out <- daily_pollution_out %>%
+                         select(-starts_with("h"))
+
+```
+
+```{r}
+fecha_str <- paste(daily_pollution_out$year, daily_pollution_out$month, daily_pollution_out$dia, sep = "-")
+
+# Convertir la cadena de fecha a un objeto de fecha
+daily_pollution_out$fecha <- as.Date(fecha_str, format = "%Y-%m-%d")
+```
+
+Average no2 pollution levels outside Madrid´s Municipality
+```{r}
+daily_pollution_out <- daily_pollution_out |> 
+  mutate(
+    no2_pollution = as.numeric(no2_pollution),
+    fecha = as.factor(fecha))
+
+mean_no2_pollution_per_year <- daily_pollution_out %>%
+  group_by(year) %>%
+  summarize(mean_no2_pollution = mean(no2_pollution, na.rm = TRUE))
+
+# Mostrar el resultado
+mean_no2_pollution_per_year
+```
+
+```{r}
+daily_pollution_center$city_center <- 1
+daily_pollution_out$city_center <- 0
+df_pollution <- rbind(daily_pollution_center, daily_pollution_out)
+unique_values2 <- unique(df_pollution$punto_muestreo)
+print(unique_values2)
+```
+```{r}
+
+df_pollution$no2_pollution <- as.numeric(df_pollution$no2_pollution)
+
+df_pollution <- df_pollution[!is.na(df_pollution$fecha), ]
+
+df_pollution <- df_pollution |> 
+  mutate(punto_muestreo = str_replace(punto_muestreo, "_[^_]+_[^_]+$", ""))
+
+#write.csv(df_pollution, file = "df_pollution.csv", row.names = FALSE)
+
+```
+
+INFORMACIÓN DE ESTACIONES CENTRO CIUDAD
+
+```{r}
+city_stations <- read_delim("informacion_estaciones_red_calidad_aire.csv", delim=";")
+
+city_stations <- city_stations |> 
+   select(
+     punto_muestreo = CODIGO,
+     station_code = CODIGO_CORTO,
+     station_name = ESTACION,
+     address = DIRECCION,
+     station_type = NOM_TIPO,
+     longitude = LONGITUD,
+     latitude = LATITUD) %>% 
+    mutate(station_code = as.character(station_code))
+
+
+city_stations <- city_stations %>%
+  mutate(
+    station_type = str_replace_all(station_type, "tráfico", "trafico"),
+    station_type = str_to_title(station_type),
+    station_type = str_replace_all(station_type, "\\bfondo\\b", "Fondo"),
+    station_type = str_replace_all(station_type, "\\bindustrial\\b", "Industrial"),
+    station_type = str_replace_all(station_type, "\\btrafico\\b", "Trafico")
+  )
+```
+
+INFORMACIÓN ESTACIONES FUERA DEL CENTRO DE MADRID
+
+```{r}
+com_stations <- read_delim("com_stations.csv", delim=";")
+com_stations <- com_stations |> 
+  mutate(
+    punto_muestreo = estacion_codigo,
+    station_code = str_sub(estacion_codigo, -2, -1),
+    station_code = if_else(str_starts(station_code, "0"),
+                           str_remove(station_code, "^0"),
+                           station_code))
+
+  com_stations <- com_stations |> 
+  select(station_name = estacion_municipio,
+          punto_muestreo,
+          station_code,
+          station_type = estacion_tipo_estacion,
+          area_type = estacion_tipo_area,
+          address = estacion_direccion_postal,
+          longitude = estacion_coord_longitud,
+          latitude = estacion_coord_latitud) 
+  
+com_stations <- com_stations %>%
+  mutate(station_type = paste(area_type, station_type, sep = " ")) |> 
+  select(-area_type)
+
+
+# Fix the latitude and longitude columns using regular expressions
+com_stations<- com_stations %>%
+  # Remove quotes at the beginning and end of the longitude column
+  mutate(longitude = str_remove(longitude, "^\"|\",\\s*\"$")) %>%
+  # Replace commas with periods in the longitude column and convert to numeric
+  mutate(longitude = as.numeric(gsub(",", ".", longitude))) %>% 
+  # Remove quotes and commas from the end of the latitude column
+  mutate(latitude = str_remove(latitude, "\"?,?$")) %>%
+  # Replace commas with periods in the latitude column and convert to numeric
+  mutate(latitude = as.numeric(gsub(",", ".", latitude))) 
+
+# Remove any sequence of two commas AND quotation marks from the address column
+com_stations <- com_stations%>% 
+  # Remove quotes from the address column
+  mutate(address = str_remove(address, '["\']')) %>% 
+  # Remove any sequence of two commas from the address column
+  mutate(address = str_remove(address, ",{2}"))
+```
+
+
+```{r}
+unique_values1<- unique(daily_pollution_center$punto_muestreo)
+
+unique_values3 <- unique(city_stations$punto_muestreo)
+
+print(unique_values1)
+print(unique_values3)
+
+```
+
+
+```{r}
+unique_values2 <- unique(daily_pollution_out$punto_muestreo)
+unique_values4 <- unique(com_stations$punto_muestreo)
+print(unique_values2) 
+print(unique_values4)
+```
+```{r}
+# Lista de valores a eliminar
+valores_a_eliminar <- c("28134002", "28115003", "28106001", "28127004")
+
+# Filtrar el dataframe para eliminar las observaciones con esos valores en punto_muestreo
+df_pollution <- df_pollution |> 
+  filter(!punto_muestreo %in% valores_a_eliminar)
+
+# Verificar los cambios
+print(df_pollution)
+```
+
+Juntar ambos dataframes con informacion sobre las estaciones
+
+```{r}
+estaciones <- bind_rows(city_stations, com_stations)
+```
+
+```{r}
+estaciones <- estaciones |> 
+  mutate(punto_muestreo = as.character(punto_muestreo))
+
+df_combined <- df_pollution |> 
+  left_join(estaciones, by = "punto_muestreo")
+
+```
+
+
+```{r}
+df_combined <- df_combined |>  drop_na(no2_pollution)
+
+df_combined<- df_combined |> 
+  filter(as.Date(fecha) <= as.Date("2021-06-30"))
+
+colSums(is.na(df_combined))
+
+```
+```{r}
+yearly_averages <- df_combined |> 
+  group_by(year, city_center) |> 
+  summarise(avg_yearly_pollution = mean(no2_pollution, na.rm = TRUE)) %>%
+  ungroup()
+
+yearly_averages <- yearly_averages |> 
+  mutate(year = as.numeric(as.character(year)))
+
+write.csv(yearly_averages, "yearly_averages.csv", row.names = FALSE)
+
+ggplot(yearly_averages, aes(x = year, y = avg_yearly_pollution, color = as.factor(city_center), group = city_center)) + 
+  geom_line() + 
+  geom_point() +
+  labs(x = "Year", 
+       y = expression("Yearly Pollution Average (NO2)"), 
+       title = expression("Examining Parallel Trends: Evolution of Yearly Average Pollution (NO2) Levels (2015 - 2021)"),
+       color = "City center") + 
+  geom_vline(xintercept = 2018.91, 
+             linetype = "dashed", 
+             color = "black") +
+  annotate("text", x = 2019, y = max(yearly_averages$avg_yearly_pollution, na.rm = TRUE) * 0.95, 
+           label = "Policy Implementation", vjust = -0.5, hjust = 0, size = 3) +
+  theme_light() +
+  theme(plot.title = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r, echo=FALSE}
+df_combined <- df_combined |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zone 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    station_name %in% c("Valdemoro", "Arganda del Rey", "Collado Villalba", "Algete", "Colmenar Viejo", "Alcala de Henares") ~ "Control",
+    TRUE ~ "Excluded"
+  ))
+
+```
+
+```{r}
+
+yearly_averages <- df_combined |> 
+  group_by(year, zone) |> 
+  summarise(avg_yearly_pollution = mean(no2_pollution, na.rm = TRUE)) %>%
+  ungroup()
+
+yearly_averages <- yearly_averages |> 
+  mutate(year = as.numeric(as.character(year)))
+
+
+zone_colors <- c("Zone 1" = "lightblue", "Zone 2" = "orange", "Zone 3" = "purple", 
+                  "Zone 4" = "yellow", "Control" = "red", "Excluded" = "grey")
+
+
+ggplot(yearly_averages, aes(x = year, y = avg_yearly_pollution, color = zone)) + 
+  geom_line() + 
+  labs(x = "Year", 
+       y = expression("Yearly Pollution Averages"), 
+       title = expression("Examining Parallel Trends: Evolution of Yearly Average Pollution Levels by Zone (2015 - 2021)"),
+       color = "Zone") + 
+  scale_color_manual(values = zone_colors) +
+  geom_vline(xintercept =  2018.91, 
+             linetype = "dashed", 
+             color = "black") +
+  annotate("text", x = 2019, y = max(yearly_averages$avg_yearly_pollution, na.rm = TRUE) * 0.95, 
+           label = "Policy Implementation", vjust = -0.5, hjust = 0, size = 3) +
+  theme_light() +
+  theme(plot.title = element_text(size = 11))
+
+
+
+```
+
