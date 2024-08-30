@@ -1,0 +1,555 @@
+---
+title: "ATT ESTIMATIONS"
+author: "DANIEL PÉREZ"
+date: "2024-08-04"
+output: html_document
+---
+
+```{r}
+library(caret)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(Synth)
+library(geosphere)
+library(estimatr)
+library(fixest)
+library(leaflet)
+```
+
+```{r}
+
+df_combined <- read_csv("df_combined_complete.csv")
+
+
+df_combined <- df_combined |>  drop_na(air_quality)
+
+df_combined<- df_combined |> 
+  filter(as.Date(fecha) <= as.Date("2021-06-30"))
+
+#air quality monitoring stations in Madrid are divided into four zones under current regulations
+df_combined <- df_combined |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zone 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    station_name %in% c("Valdemoro", "Arganda del Rey", "Collado Villalba", "Algete", "Colmenar Viejo", "Alcala de Henares") ~ "Control",
+    TRUE ~ "Excluded"
+  ))
+```
+I again confirm that the assumption of parallel trends does not hold, using monthly data.
+```{r}
+#MONTHLY
+monthly_avg <- df_combined %>%
+  group_by(year, month, zone) %>%
+  summarise(mean_air_quality = mean(air_quality, na.rm = TRUE)) %>%
+  ungroup()
+
+monthly_avg <- monthly_avg %>%
+  mutate(date = as.Date(paste(year, month, "01", sep = "-"), format = "%Y-%m-%d"))
+
+ggplot(monthly_avg, aes(x = date, y = mean_air_quality, color = zone)) +
+  geom_line() +
+  geom_vline(xintercept = as.Date("2018-11-01"), linetype = "dashed", color = "red", size = 1) +
+  labs(title = "Serie Temporal de la Contaminación Media Mensual por Año y Tratamiento",
+       x = "Fecha",
+       y = "Contaminación Media (air_quality)",
+       color = "zone") +
+  theme_minimal() +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Map to visualize monitoring stations
+
+```{r}
+#MAP
+
+color_pal <- colorFactor(
+  palette = c("red", "grey", "lightblue", "orange", "purple", "yellow"),
+  domain = c("Control", "Excluded", "Zone 1", "Zone 2", "Zone 3", "Zone 4")
+)
+
+
+map <- leaflet(df_combined) |> 
+  addProviderTiles(providers$CartoDB.Positron) |> 
+  setView(lng = median(df_combined$longitude), lat = median(df_combined$latitude), zoom = 12) |> 
+  # Añadir círculos con color basado en la variable 'zone'
+  addCircles(
+    lng = ~longitude, 
+    lat = ~latitude,
+    color = ~color_pal(zone),
+    fillOpacity = 0.7,
+    radius = 5
+  ) |> 
+  addLabelOnlyMarkers(
+    lng = median(df_combined$longitude) - 0.3, 
+    lat = median(df_combined$latitude) + 0.1,
+    labelOptions = labelOptions(textsize = "20px", noHide = TRUE, textOnly = TRUE)
+  ) |> 
+  addLegend(
+    position = "topright",
+    pal = color_pal,
+    values = c("Zone 1", "Zone 2", "Zone 3", "Zone 4", "Excluded", "Control"),
+    title = "Zone",
+    opacity = 1
+  )
+
+# Mostrar el mapa
+map
+
+```
+1. DIFFERENCES IN DIFFERENCES APPROACH
+
+1.1 MADRID MUNICIPALITY
+
+```{r}
+df_combined <- df_combined |> 
+  filter(zone != "Excluded")
+
+monthly_avg <- df_combined |> 
+  group_by(year, month, zone) |> 
+  summarise(mean_air_quality = mean(air_quality, na.rm = TRUE)) %>%
+  ungroup()
+
+df_combined <- df_combined |> 
+  filter(!(fecha >= as.Date("2020-02-01") & fecha <= as.Date("2020-07-31"))) #omitted covid period
+
+df_combined <- df_combined |>  filter(as.Date(fecha) <= as.Date("2021-06-30"))
+
+model0 <- feols(air_quality ~ city_center + post_treat_mad_central + city_center*post_treat_mad_central + prec + dir + velmedia + racha +year + zone,  data = df_combined, cluster = ~zone)
+summary(model0)
+
+```
+
+1.2 Assesing heterogeneity treatment effects. Differences in differences approach by zone.
+
+```{r}
+df_combined<- df_combined |> 
+  mutate(year = as.factor(year), zone = as.factor(zone), post = as.factor(post_treat_mad_central))
+
+
+df_combined <- df_combined |> 
+  mutate(
+    post = as.numeric(as.character(post)),
+    year = as.numeric(as.character(year))
+  )
+
+
+df_combined <- df_combined |> 
+  mutate(
+    treatment_zone1 = ifelse(zone == "Zone 1", 1, 0),
+    treatment_zone2 = ifelse(zone == "Zone 2", 1, 0),
+    treatment_zone3 = ifelse(zone == "Zone 3", 1, 0),
+    treatment_zone4 = ifelse(zone == "Zone 4", 1, 0))
+    
+  
+df_combined <- df_combined %>%
+  mutate(
+    POST_treat_1 = post * treatment_zone1,
+    POST_treat_2 = post * treatment_zone2,
+    POST_treat_3 = post * treatment_zone3,
+    POST_treat_4 = post * treatment_zone4,
+  )
+
+
+model1 <- feols(air_quality ~ post + treatment_zone1 + treatment_zone2 + treatment_zone3 + treatment_zone4 + POST_treat_1  + POST_treat_2 + POST_treat_3 + POST_treat_4 + prec + dir + velmedia + racha + year,  data = df_combined, cluster = ~zone)
+summary(model1)
+
+
+```
+2. Counterfactual Estimation Using Predictive Models
+
+```{r}
+data_post_policy <- read_csv("predictions_xgboost_POSTPOLICY_CITYCENTER_CV") |> 
+  filter(fecha < as.Date("2021-05-01")) |> 
+  filter(!(fecha >= as.Date("2020-02-01") & fecha <= as.Date("2020-07-31")))
+
+# Ajustar el nombre de las zonas
+data_post_policy <- data_post_policy |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zona 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    TRUE ~ NA_character_
+  ))
+```
+
+DESCRIPTIVE STATISTICS FOR MADRID
+
+```{r}
+mean_no2 <- data_post_policy |> 
+  summarise(
+    mean_no2= mean(air_quality, na.rm = TRUE),
+    sd_no2 = sd(air_quality, na.rm = TRUE),
+    mean_tmed=mean(tmed),
+    sd_tmed=sd(tmed),
+    mean_prec=mean(prec),
+    sd_prec=sd(prec),
+    mean_prec=mean(prec),
+    sd_prec=sd(prec),
+    mean_dir=mean(dir),
+    sd_dir=sd(dir)
+    
+  )
+print(mean_no2)
+```
+
+DESCRIPTIVE STATISTICS BY ZONE
+
+```{r}
+mean_no2_zone<- data_post_policy |> 
+  group_by(zone) |> 
+  summarise(
+    mean_no2= mean(air_quality, na.rm = TRUE),
+    sd_no2 = sd(air_quality, na.rm = TRUE),
+    mean_tmed=mean(tmed),
+    sd_tmed=sd(tmed),
+    mean_prec=mean(prec),
+    sd_prec=sd(prec),
+    mean_prec=mean(prec),
+    sd_prec=sd(prec),
+    mean_racha=mean(racha),
+    sd_racha=sd(racha)
+    
+  )
+print(mean_no2_zone)
+```
+
+2.1 AVERAGE TREATMENT ON TREATED (ATT) ESTIMATION
+
+```{r}
+# Calculate the difference between observed and predicted air quality
+data_with_difference <- data_post_policy |> 
+  mutate(
+    difference_air_quality_predicted = air_quality - predicted_air_quality
+  )
+
+# Calculate the overall mean of the difference <- ATT (AVERAGE TREATMENT ON TREATET)
+mean_difference_general <- data_with_difference |> 
+  summarise(
+    mean_difference = mean(difference_air_quality_predicted, na.rm = TRUE)
+  )
+
+print(mean_difference_general)
+```
+
+Calculating standar errors as Souza(2019) proposed
+
+```{r}
+# Ajustar la diferencia restando la media general
+data_with_adjusted_difference <- data_with_difference |> 
+  mutate(
+    adjusted_difference = difference_air_quality_predicted - mean_difference_general$mean_difference
+  )
+
+# Calcular el sumatorio de las diferencias ajustadas
+sum_adjusted_difference_general <- data_with_adjusted_difference |> 
+  summarise(
+    sum_adjusted_difference = sum(adjusted_difference, na.rm = TRUE)
+  )
+
+# Leer datos de entrenamiento
+train_data_20 <- read_csv("train_data_20.csv") |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zona 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    TRUE ~ NA_character_
+  ))
+
+# Calcular el sumatorio de residuos de validación cruzada
+sumatorio_cv_residuos_general <- train_data_20 |> 
+  summarise(
+    sumatorio_cv_residuos = sum(cv_residuos, na.rm = TRUE)
+  )
+
+# Calcular la varianza y el error estándar
+standar_error_cv_general <- sum_adjusted_difference_general |> 
+  mutate(
+    variance_cv = (sum_adjusted_difference + sumatorio_cv_residuos_general$sumatorio_cv_residuos)^2,
+    se_cv = sqrt(variance_cv)
+  )
+
+# Mostrar los resultados
+print(standar_error_cv_general)
+
+
+print(mean_difference_general)
+```
+2.2 CONDITIONAL AVERAGE TREATMENT ON TREATED (C ATT) ESTIMATION BY ZONE
+
+```{r}
+data_post_policy<- read_csv("predictions_xgboost_POSTPOLICY_CITYCENTER_CV")
+
+data_post_policy<- data_post_policy |> 
+  filter(fecha < as.Date("2021-05-01"))
+
+data_post_policy <- data_post_policy |> 
+  filter(!(fecha >= as.Date("2020-02-01") & fecha <= as.Date("2020-07-31")))
+
+data_post_policy <- data_post_policy |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zona 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    TRUE ~ NA_character_
+  ))
+```
+
+
+```{r}
+data_with_difference <- data_post_policy |> 
+  mutate(
+    difference_air_quality_predicted = air_quality - predicted_air_quality
+  )
+
+mean_difference_by_zone <- data_with_difference |> 
+  group_by(zone) |> 
+  summarise(
+    mean_difference = mean(difference_air_quality_predicted, na.rm = TRUE)
+  )
+print(mean_difference_by_zone) #C ATT BY ZONE
+```
+
+Calculating Standar Errors by zone as proposed by (Souza, 2019)
+
+```{r}
+train_data_20<- read_csv("train_data_20.csv")
+
+train_data_20 <- train_data_20 %>%
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zona 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    TRUE ~ NA_character_
+  ))
+
+data_with_difference <- data_post_policy |> 
+  mutate(
+    difference_air_quality_predicted = air_quality - predicted_air_quality
+  )
+
+mean_difference_by_zone <- data_with_difference |> 
+  group_by(zone) |> 
+  summarise(
+    mean_difference = mean(difference_air_quality_predicted, na.rm = TRUE)
+  )
+
+# Step 3: Subtract the overall mean from each value in the difference column for each zone category
+data_with_adjusted_difference <- data_with_difference |> 
+  left_join(mean_difference_by_zone, by = "zone") |> 
+  mutate(
+    adjusted_difference = difference_air_quality_predicted - mean_difference
+  )
+
+# Step 4: Calculate the sum of adjusted differences for each zone category
+sum_adjusted_difference_by_zone <- data_with_adjusted_difference |> 
+  group_by(zone) |> 
+  summarise(
+    sum_adjusted_difference = sum(adjusted_difference, na.rm = TRUE)
+  )
+
+# Step 5: Calculate the sum of cv_residuos
+sumatorio_cv_residuos_by_zone <- train_data_20 |> 
+  group_by(zone) |> 
+  summarise(
+    sumatorio_cv_residuos = sum(cv_residuos, na.rm = TRUE)
+  )
+
+standar_error_cv_by_zone <- sum_adjusted_difference_by_zone |> 
+  left_join(sumatorio_cv_residuos_by_zone, by = "zone") |> 
+  mutate(
+    variance_cv = (sum_adjusted_difference + sumatorio_cv_residuos)^2
+  )
+
+# Step 2: Calculate the standard error from the variance
+standar_error_cv_by_zone <- standar_error_cv_by_zone |> 
+  mutate(
+    se_cv = sqrt(variance_cv)
+  )
+
+# Display the results
+print(standar_error_cv_by_zone)
+print(mean_difference_by_zone)
+
+
+```
+```{r}
+observations_per_zone <- data_post_policy %>%
+  count(zone)
+
+print(observations_per_zone)
+
+```
+
+I repeat the analysis only with the post-COVID-19 data to perform a robustness analysis. This is necessary because the pandemic may have significantly altered the dynamics of key variables, such as air quality and traffic patterns. 
+By focusing the analysis on the post-COVID period, we verify whether the original conclusions remain valid in a different context, ensuring the consistency and reliability of the results obtained.
+
+3. DIFFERENCES IN DIFFERENCES APPROACH BEFORE COVID-19
+
+```{r}
+df_combined <- read_csv("df_combined_complete.csv")
+
+df_combined <- df_combined |>  drop_na(air_quality)
+
+df_combined <- df_combined |> 
+  filter(fecha <= as.Date("2020-02-01"))
+
+
+df_combined <- df_combined %>%
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zone 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    station_name %in% c("Valdemoro", "Arganda del Rey", "Collado Villalba", "Algete", "Colmenar Viejo", "Alcala de Henares", "San Martin de Valdeiglesias", "Villa del Prado") ~ "Control",
+    TRUE ~ "Excluded"
+  ))
+```
+3.1 MADRID MUNICIPALITY BEFORE COVID-19
+
+```{r}
+df_combined <- df_combined %>%
+  filter(zone != "Excluded")
+
+model0 <- feols(air_quality ~ city_center + post_treat_mad_central + city_center*post_treat_mad_central + prec + dir + velmedia + racha +year + zone,  data = df_combined, cluster = ~zone)
+summary(model0)
+
+```
+
+3.2 Assesing heterogeneity treatment effects. Differences in differences approach by zone before COVID-19
+
+```{r}
+df_combined<- df_combined |> 
+  mutate(year = as.factor(year), zone = as.factor(zone), post = as.factor(post_treat_mad_central))
+
+df_combined <- df_combined |> 
+  mutate(
+    post = as.numeric(as.character(post)),
+    year = as.numeric(as.character(year))
+  )
+
+# Crear variables de tratamiento para cada zona
+df_combined <- df_combined |> 
+  mutate(
+    treatment_zone1 = ifelse(zone == "Zone 1", 1, 0),
+    treatment_zone2 = ifelse(zone == "Zone 2", 1, 0),
+    treatment_zone3 = ifelse(zone == "Zone 3", 1, 0),
+    treatment_zone4 = ifelse(zone == "Zone 4", 1, 0))
+
+
+df_combined <- df_combined %>%
+  mutate(
+    POST_treat_1 = post * treatment_zone1,
+    POST_treat_2 = post * treatment_zone2,
+    POST_treat_3 = post * treatment_zone3,
+    POST_treat_4 = post * treatment_zone4,
+  )
+```
+
+
+```{r}
+model1 <- feols(air_quality ~ post + treatment_zone1 + treatment_zone2 + treatment_zone3 + treatment_zone4 + POST_treat_1  + POST_treat_2 + POST_treat_3 + POST_treat_4 + prec + dir + velmedia + racha + year,  data = df_combined, cluster = ~zone)
+summary(model1)
+
+```
+
+4. Counterfactual Estimation Using Predictive Models Before COVID-19
+
+```{r}
+data_post_policy<- read_csv("predictions_xgboost_POSTPOLICY_CITYCENTER_CV")
+
+data_post_policy <- data_post_policy |> 
+  filter(fecha <= as.Date("2020-02-01"))
+
+
+data_post_policy <- data_post_policy |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zona 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    TRUE ~ NA_character_
+  ))
+
+# Agrupar por zona, año y mes, y calcular medias mensuales
+data_post_policy_monthly <- data_post_policy |> 
+  group_by(year, month, zone) |> 
+  summarise(
+    mean_air_quality = mean(air_quality, na.rm = TRUE),
+    mean_predicted_air_quality = mean(predicted_air_quality, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Calcular la diferencia mensual
+data_with_difference_monthly <- data_post_policy_monthly |> 
+  mutate(
+    difference_air_quality_predicted = mean_air_quality - mean_predicted_air_quality
+  )
+```
+
+4.1 AVERAGE TREATMENT ON TREATED BEFORE COVID-19
+```{r}
+mean_difference_general <- data_with_difference_monthly |> 
+  summarise(
+    mean_difference = mean(difference_air_quality_predicted, na.rm = TRUE)
+  )
+print(mean_difference_general)
+```
+4.2 CONDITIONAL AVERAGE TREATMENT ON TREATED BY ZONE BEFORE COVID-19
+
+```{r}
+mean_difference_by_zone <- data_with_difference_monthly |> 
+  group_by(zone) |> 
+  summarise(
+    mean_difference = mean(difference_air_quality_predicted, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+print(mean_difference_by_zone)
+```
+```{r}
+observations_per_zone <- data_post_policy %>%
+  count(zone)
+
+# Mostrar los resultados
+print(observations_per_zone)
+
+```
+
