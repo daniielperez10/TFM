@@ -15,5 +15,6 @@ In addition, an HTML with the graph “PARALLEL-TRENDS-GRAPH.html” is availabl
 
 
 
-4. ATT ESTIMATIONS: To excute the script "ATT AND C ATT.Rmd" correctly, you need to download files located in the folder named:"DATA FOR ATT AND CONDITIONAL ATT ESTIMATIONS", donde se encuentran dos archivos disponibles "df_combined_complete.csv" que es el output de DATAFRAME CREATION en el paso 1, y "predictions_xgboost_POSTPOLICY_CITYCENTER_CV" que es el output del ML MODELS en el paso 3. Así, ejecutando el Rmd anteriormente mencionado se pueden obtener los efectos del tratamiento sobre los tratados de Madrid Central por el método tradicional de Differences-in-Differences y por el enfoque alternativo propuesto en la tesis construyendo un contrafactual predictivo con modelos de Machine Learning
-In addition, HTML "ATT-AND-C ATT.html” is available in the folder.
+4. ATT ESTIMATIONS: To execute the script "ATT AND C ATT.Rmd" correctly, you need to download files located in the folder named: "DATA FOR ATT AND CONDITIONAL ATT ESTIMATIONS," where two files are available: "df_combined_complete.csv," which is the output from DATAFRAME CREATION in step 1, and "predictions_xgboost_POSTPOLICY_CITYCENTER_CV," which is the output from ML MODELS in step 3. Thus, by running the aforementioned Rmd file, one can obtain the treatment effects on the treated for Madrid Central using the traditional Differences-in-Differences method and the alternative approach proposed in the thesis, constructing a predictive counterfactual with Machine Learning models. 
+
+In addition, HTML "ATT-AND-C ATT.html" is available in the folder.
