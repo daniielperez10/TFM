@@ -1,0 +1,434 @@
+---
+title: "ML MODELS"
+author: "DANIEL PÉREZ"
+date: "2024-06-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(caret)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(geosphere)
+library(estimatr)
+```
+
+
+```{r}
+df_combined <- read_csv("df_combined_complete.csv")
+```
+```{r}
+df_combined <- df_combined %>% drop_na(air_quality)
+
+df_combined<- df_combined %>%
+  filter(as.Date(fecha) <= as.Date("2021-06-30"))
+
+colSums(is.na(df_combined))
+
+```
+```{r}
+ggplot(df_combined, aes(x = air_quality)) +
+  geom_density(fill = "blue", color = "black") +
+  labs(title = "Densidad de la Calidad del Aire", x = "Calidad del Aire", y = "Densidad") +
+  theme_minimal()
+
+```
+
+
+PREDICTIVE COUNTERFACTUAL CREATION USING MACHINE LEARNING MODELS
+
+```{r}
+df_combined <- read_csv("df_combined_complete.csv")
+df_combined <- df_combined |>  drop_na(air_quality)
+data_pre_policy <- df_combined |>  filter(fecha < as.Date('2018-11-30'))
+data_pre_policy <- data_pre_policy |>  filter(city_center == 1)
+
+data_pre_policy <- data_pre_policy |> 
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_pre_policy <- data_pre_policy |> 
+  select(c(5:6, 8, 14, 16:18, 20:22, 25:27))
+```
+TRAINING SET AND TESTING SET CREATION
+```{r}
+set.seed(42)
+index_20 <- createDataPartition(data_pre_policy$air_quality, p = 0.5, list = FALSE)  
+data_20 <- data_pre_policy[index_20, ]
+
+```
+
+```{r}
+set.seed(42)
+
+trainIndex_20 <- createDataPartition(data_20$air_quality, p = 0.6, list = FALSE)
+train_data_20 <- data_20[trainIndex_20, ]
+test_data_20 <- data_20[-trainIndex_20, ]
+
+str(train_data_20)
+
+```
+
+1. OLS 
+
+```{r}
+# Ajustar el modelo OLS
+ols_model <- lm(air_quality ~ ., data = train_data_20)
+
+# Evaluar el modelo en el conjunto de prueba
+ols_predictions <- predict(ols_model, newdata = test_data_20)
+ols_test_results <- data.frame(actual = test_data_20$air_quality, predicted = ols_predictions)
+
+# Calcular RMSE
+ols_rmse <- sqrt(mean((ols_test_results$actual - ols_test_results$predicted)^2))
+
+# Calcular MAE
+ols_mae <- mean(abs(ols_test_results$actual - ols_test_results$predicted))
+
+# Calcular R^2
+ols_r2 <- cor(ols_test_results$actual, ols_test_results$predicted)^2
+
+# Imprimir los resultados
+cat("OLS RMSE:", ols_rmse, "\n")
+cat("OLS MAE:", ols_mae, "\n")
+cat("OLS R^2:", ols_r2, "\n")
+```
+
+2. RANDOM FOREST
+
+```{r}
+set.seed(42)
+
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+model <- train(air_quality ~ ., 
+               data = train_data_20, 
+               method = "rf", 
+               trControl = train_control)
+
+# Evaluar el modelo en el conjunto de prueba
+predictions <- predict(model, newdata = test_data_20)
+test_results <- data.frame(actual = test_data_20$air_quality, predicted = predictions)
+
+rmse <- sqrt(mean((test_results$actual - test_results$predicted)^2)) #10
+mae <- mean(abs(test_results$actual - test_results$predicted)) #7.64
+r2 <- cor(test_results$actual, test_results$predicted)^2 #0.75
+
+```
+
+3. xgboost
+```{r}
+set.seed(42)
+library(xgboost)
+
+train_control <- trainControl(method = "cv", number = 5)  
+
+tune_grid <- expand.grid(
+  nrounds = c(500, 1000),
+  max_depth = c(6, 8,10),
+  eta = c(0.01, 0.1),
+  gamma = c(1, 2),
+  colsample_bytree = c(0.6, 0.8),  
+  min_child_weight = c(1, 2, 4),
+  subsample = c(0.5, 0.8)
+) #RMSE 8.2074403 Rsquared 0.8311039 MAE 6.1128442
+
+
+set.seed(42)
+xgb_tune <- train(
+  air_quality ~ . ,
+  data = train_data_20, 
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  verbose = TRUE
+)
+
+set.seed(42)
+predictions <- predict(xgb_tune, newdata = test_data_20)
+
+# Evaluar el modelo
+results <- postResample(predictions, test_data_20$air_quality)
+print(results)
+
+data_pre_policy$predicted_air_quality <- predict(xgb_tune, newdata = data_pre_policy)
+
+str(data_pre_policy)
+
+data_pre_policy <- data_pre_policy |> 
+  mutate(
+    year = as.factor(year),
+    month = as.factor(month)
+  )
+
+#write.csv(data_pre_policy, "data_pre_policy_predictions.csv", row.names = FALSE) 
+
+```
+
+```{r}
+
+#data_pre_policy <- read.csv("data_pre_policy_predictions.csv")
+
+```
+
+
+Counterfactual Validation: Comparison of Observed and Predicted NO₂ Levels Before the Implementation of Madrid Central
+
+```{r}
+
+monthly_means <- data_pre_policy |> 
+  mutate(
+    year_month_label = paste(year, month, sep = "-")
+  )
+
+monthly_means <- monthly_means |> 
+  group_by(year_month_label) |> 
+  summarise(
+    no2_pollution_mean = mean(air_quality, na.rm = TRUE),
+    predicted_no2_pollution_mean = mean(predicted_air_quality, na.rm = TRUE)
+  )
+
+monthly_means <- monthly_means |> 
+  mutate(
+    year_month_date = as.Date(paste0(year_month_label, "-01"), format = "%Y-%m-%d")
+  ) %>%
+  arrange(year_month_date)
+
+monthly_means <- monthly_means |> 
+  filter(year_month_date <= as.Date("2018-10-01"))
+
+ggplot(monthly_means, aes(x = year_month_date)) +
+  geom_line(aes(y = no2_pollution_mean, color = "NO2 Pollution")) +
+  geom_line(aes(y = predicted_no2_pollution_mean, color = "Predicted NO2 Pollution", group = 1), linetype = "dashed") +
+  labs(
+    x = "Year-Month",
+    y = "NO2 Pollution (Monthly Levels)", 
+    color = NULL,
+    title = ""
+  ) +
+  scale_color_manual(values = c("NO2 Pollution" = "blue", "Predicted NO2 Pollution" = "red")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "1 month")
+```
+
+
+GENERATE POST-TREATMENT PREDICTIONS
+
+```{r}
+data_post_policy <- df_combined_clean %>% filter(fecha >= as.Date('2018-11-30'))
+data_post_policy <- data_post_policy%>% filter(city_center == 1)
+
+data_post_policy <- data_post_policy %>%
+  mutate(year = as.numeric(year),
+         month = as.numeric(month),
+         day = as.numeric(dia),
+         station_type = as.factor(station_type),
+         station_code.x = as.factor(station_code.x))
+
+data_post_policy <- data_post_policy |> 
+  select(c(5:6, 7:9, 14, 16:18, 20:22, 25:27))
+
+set.seed(42)
+data_post_policy$predicted_air_quality <- predict(xgb_tune, newdata = data_post_policy)
+#write.csv(data_post_policy, file = "predictions_xgboost_POSTPOLICY_CITYCENTER_CV", row.names = FALSE) #guardar el dataframe con las predicciones generadas por xgboost
+```
+
+
+```{r}
+#data_post_policy<- read_csv("predictions_xgboost_POSTPOLICY_CITYCENTER_CV")
+
+# FILTER UNTIL MAY 2021 TO AVOID OVERLAP WITH MADRID 360 (THE SUCCESSOR POLICY)
+ data_post_policy<- data_post_policy |> 
+  filter(fecha < as.Date("2021-05-01"))
+```
+
+Comparison of Observed and Predicted Counterfactual NO₂ Levels After the Implementation of Madrid Central
+
+```{r}
+
+monthly_means <- data_post_policy |> 
+  mutate(
+    year_month_label = paste(year, month, sep = "-")
+  )
+
+monthly_means <- monthly_means |> 
+  group_by(year_month_label) |> 
+  summarise(
+    no2_pollution_mean = mean(air_quality, na.rm = TRUE),
+    predicted_no2_pollution_mean = mean(predicted_air_quality, na.rm = TRUE)
+  )
+
+monthly_means <- monthly_means |> 
+  mutate(
+    year_month_date = as.Date(paste0(year_month_label, "-01"), format = "%Y-%m-%d")
+  ) %>%
+  arrange(year_month_date)
+
+monthly_means<- monthly_means |> 
+  filter(year_month_date >= as.Date("2018-12-01"))
+
+ggplot(monthly_means, aes(x = year_month_date)) +
+  geom_line(aes(y = no2_pollution_mean, color = "NO2 Pollution", group = 1)) +
+  geom_line(aes(y = predicted_no2_pollution_mean, color = "Predicted Counterfactual NO2 Pollution", group = 1), linetype = "dashed") +
+  labs(
+    x = "Year-Month",
+    y = "NO2 Pollution (Monthly Levels)",
+    color = NULL,
+    title = ""
+  ) +
+  scale_color_manual(values = c("NO2 Pollution" = "blue", "Predicted Counterfactual NO2 Pollution" = "red")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "1 month")
+
+
+```
+
+Assumption 4 (Stability of the Counterfactual Function):
+
+Purpose: To ensure that the prediction of what would have happened without the treatment is consistent and stable over time.
+
+Analogy with Pre-trends: In DiD (Differences-in-Differences), parallel trends imply that any difference between the groups after the treatment is due to the treatment. Similarly, the stability of the counterfactual function implies that any observed difference can be attributed to the treatment and not to changes in the prediction function
+
+```{r}
+cv_residuos <- residuals(xgb_tune, type = "raw")
+
+tratamiento_fecha <- as.Date("2018-11-30")  # Set the treatment start date
+
+# Step 2: Create a date with day 01 in train_data_20
+train_data_20$fecha <- as.Date(paste(train_data_20$year, train_data_20$month, "01", sep = "-"))
+
+# Step 3: Calculate the weeks before the treatment
+train_data_20$weeks_Prior_to_Treatment <- as.numeric(difftime(tratamiento_fecha, train_data_20$fecha, units = "weeks")) 
+
+train_data_20$cv_residuos <- cv_residuos 
+
+#write.csv(train_data_20, "train_data_20.csv", row.names = FALSE) 
+
+```
+
+
+```{r}
+#train_data_20<- read_csv("train_data_20.csv")
+```
+
+
+```{r}
+mean_cv_residuos <- mean(train_data_20$cv_residuos, na.rm = TRUE)
+mean_cv_residuos
+
+tratamiento_fecha <- as.Date("2018-11-30")  # Set the start date of the treatment
+
+# Step 2: Create a date with day 01 in train_data_20
+train_data_20$fecha <- as.Date(paste(train_data_20$year, train_data_20$month, "01", sep = "-"))
+
+# Step 3: Calculate the weeks before the treatment
+train_data_20$weeks_Prior_to_Treatment <- as.numeric(difftime(tratamiento_fecha, train_data_20$fecha, units = "weeks")) 
+
+train_data_20$weeks_Prior_to_Treatment <- ceiling(train_data_20$weeks_Prior_to_Treatment)
+
+regresion <- lm(cv_residuos ~ weeks_Prior_to_Treatment , data = train_data_20)
+summary(regresion)
+
+```
+
+
+```{r}
+set.seed(42)
+predicciones <- predict(regresion, newdata = train_data_20, interval = "confidence")
+
+
+weekly_residuals <- train_data_20 |> 
+  group_by(weeks_Prior_to_Treatment) |> 
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) |> 
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+weekly_residuals <- train_data_20 |> 
+  mutate(weeks_group = cut(weeks_Prior_to_Treatment, 
+                           breaks = seq(0, max(weeks_Prior_to_Treatment) + 5, by = 5),
+                           right = FALSE, labels = FALSE)) |> 
+  group_by(weeks_group) |> 
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) |> 
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+
+weekly_residuals <- train_data_20 |> 
+  group_by(weeks_Prior_to_Treatment) |> 
+  summarise(cv_residuos_mean = mean(cv_residuos, na.rm = TRUE),
+            cv_residuos_sd = sd(cv_residuos, na.rm = TRUE),
+            n = n()) %>%
+  mutate(se = cv_residuos_sd / sqrt(n),
+         lower_ci = cv_residuos_mean - 1.96 * se,
+         upper_ci = cv_residuos_mean + 1.96 * se)
+
+
+
+weekly_residuals <- weekly_residuals |> 
+  filter(row_number() != 11)
+
+# GRAPH
+ggplot(weekly_residuals, aes(x = weeks_Prior_to_Treatment, y = cv_residuos_mean)) +
+  geom_line(color = "blue") +  
+  geom_ribbon(aes(ymin = lower_ci, ymax = upper_ci), fill = "blue", alpha = 0.2) +  #CI
+  labs(title = "Assessing Anticipatory Effects and the Stability of the Counterfactual
+Function",
+       x = "Weeks prior Madrid Central",
+       y = "Cross-Validated Residuals") +
+  theme_minimal() +
+  annotate("text", x = Inf, y = Inf, label = sprintf("F-stat = %.3f\nP-value = %.3f",
+           summary(regresion)$fstatistic[1],
+           pf(summary(regresion)$fstatistic[1], 
+              summary(regresion)$fstatistic[2], 
+              summary(regresion)$fstatistic[3], 
+              lower.tail = FALSE)),
+           hjust = 1.1, vjust = 1.5, size = 5, color = "red") +
+          coord_cartesian(ylim = c(-0.15, 0.15)) 
+```
+
+```{r}
+  train_data_20<- train_data_20 |> 
+  mutate(zone = case_when(
+    station_name %in% c("Escuelas Aguirre", "Castellana", "Plaza Castilla", 
+                        "Ramón y Cajal", "Cuatro Caminos", "Plaza de España", 
+                        "Barrio del Pilar", "Plaza del Carmen", "Méndez Álvaro", 
+                        "Parque del Retiro") ~ "Zone 1",
+    station_name %in% c("Plaza Elíptica", "Farolillo", "Villaverde", "Moratalaz", "Vallecas", "Ensanche de Vallecas") ~ "Zona 2",
+    station_name %in% c("Arturo Soria", "Sanchinarro", "Urb. Embajada", 
+                        "Barajas Pueblo", "Tres Olivos", "Juan Carlos I") ~ "Zone 3",
+    station_name %in% c("El Pardo", "Casa de Campo") ~ "Zone 4",
+    TRUE ~ NA_character_
+  ))
+
+```
+Since heterogeneity in the treatment effect is expected to vary by zone, it is important to provide evidence supporting the idea that cross-validated prediction errors are uncorrelated  with the covariates (zones) that might drive this heterogeneity in treatment effects 
+```{r}
+
+regresion2 <- lm(cv_residuos ~ as.factor(zone), data = train_data_20)
+summary(regresion2)
+
+set.seed(42)
+predicciones <- predict(regresion2, newdata = train_data_20, interval = "confidence")
+```
+
+Insignificant β:
+
+There is no evidence that the covariates are related to the prediction errors. This is a good indication that the model is correctly capturing the relationships and that there is no unexplained heterogeneity in the prediction errors.  
+It does not rule out the possibility of heterogeneity in the treatment effect, but it suggests that the heterogeneity is not influencing the prediction errors.
